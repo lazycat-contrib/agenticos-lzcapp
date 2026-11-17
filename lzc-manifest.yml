@@ -14,7 +14,6 @@ application:
       backend: http://backend:8000/api/v1/
     - location: /
       backend: http://frontend:3000/
-
 services:
   db:
     # upstream: pgvector/pgvector:pg16（Docker Hub）——RAG 需 pgvector 扩展，
@@ -39,7 +38,6 @@ services:
       start_period: 30s
     binds:
       - /lzcapp/var/pgdata:/var/lib/postgresql/data
-
   redis:
     # upstream: valkey/valkey:8-alpine（BSD 分支的 Redis 7.2 兼容服务）。
     # 只存限流桶/去重claim/成员应答，全部带 TTL 可重建：不落盘（--save ''，上游
@@ -56,9 +54,8 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
-
   backend:
-    # upstream: ghcr.io/vstorm-co/agenticos-backend:1.80.0（Apache-2.0）
+    # upstream: ghcr.io/vstorm-co/agenticos-backend:1.80.0
     # 镜像模式发布时 Action 改写为 ghcr.1ms.run/... 并校验 digest 与上游一致。
     image: ghcr.1ms.run/vstorm-co/agenticos-backend:1.80.0
     # 上游 compose 用一次性 migrate 容器跑 `agenticos db upgrade` 后退出；
@@ -111,7 +108,6 @@ services:
       # 媒体文件（上传的图片/文档），app 与 worker 共享同一目录
       - /lzcapp/var/media:/app/media
     mem_limit: 4g
-
   worker:
     # 同 agenticos-backend 镜像：后台工作进程（触发器、摄取、同步、清理与定时任务），
     # 从 Postgres 队列领任务；摄取在子进程内跑并有内存看门狗
@@ -150,7 +146,6 @@ services:
     binds:
       - /lzcapp/var/media:/app/media
     mem_limit: 4g
-
   frontend:
     # upstream: ghcr.io/vstorm-co/agenticos-frontend:1.80.0（Next.js 控制台）
     # BACKEND_URL 是 BFF 路由处理器服务端代理目标；PUBLIC_* 是告诉浏览器的地址，
@@ -180,7 +175,6 @@ services:
       start_period: 60s
       retries: 3
     mem_limit: 1g
-
 usage: |
   AgenticOS 是开源、可自托管的 AI 智能体平台：为团队提供共享聊天、RAG 知识库、
   技能、可治理的浏览器、4700+ MCP 服务器、预算、审批与审计（Apache-2.0，基于 Pydantic AI）。
