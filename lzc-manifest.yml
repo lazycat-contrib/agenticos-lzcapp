@@ -1,0 +1,206 @@
+application:
+  subdomain: agenticos
+  multi_instance: false
+  # 公开路径只放首页（登录页）；其余路径走登录态。
+  public_path:
+    - /
+  # 单域名两个上游：
+  #   /api/v1/ → 后端 FastAPI（浏览器直连：聊天 WebSocket /api/v1/ws/agent、
+  #     嵌入页/工件页直接取 PUBLIC_API_URL + /api/v1/...、OAuth 回调交换）
+  #   其余（含前端 BFF 的 /api/<resource>）→ Next.js 控制台（服务端再代理到 backend:8000）
+  # 前端 BFF 路由全部位于 /api/<name>（无 /api/v1 前缀），与后端路由不冲突。
+  upstreams:
+    - location: /api/v1/
+      backend: http://backend:8000/api/v1/
+    - location: /
+      backend: http://frontend:3000/
+
+services:
+  db:
+    # upstream: pgvector/pgvector:pg16（Docker Hub）——RAG 需 pgvector 扩展，
+    # 普通 postgres 首次写向量集合时 CREATE EXTENSION 失败
+    image: docker.1ms.run/pgvector/pgvector:pg16
+    environment:
+      - POSTGRES_USER=agenticos
+      - POSTGRES_PASSWORD={{ stable_secret "pg_agenticos" }}
+      - POSTGRES_DB=agenticos
+    # 生产参数：连接数按 API+worker 池上限放宽；pg_stat_statements 需启动时预载
+    # （迁移 0143 会创建该扩展）；shared_buffers 等按 2G 内存的标准比例
+    command: postgres -c max_connections=200 -c shared_preload_libraries=pg_stat_statements -c shared_buffers=512MB -c effective_cache_size=1536MB -c maintenance_work_mem=128MB -c work_mem=8MB -c wal_buffers=16MB -c random_page_cost=1.1 -c effective_io_concurrency=200 -c max_parallel_workers_per_gather=2
+    shm_size: 512mb
+    mem_limit: 2g
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U agenticos -d agenticos
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    binds:
+      - /lzcapp/var/pgdata:/var/lib/postgresql/data
+
+  redis:
+    # upstream: valkey/valkey:8-alpine（BSD 分支的 Redis 7.2 兼容服务）。
+    # 只存限流桶/去重claim/成员应答，全部带 TTL 可重建：不落盘（--save ''，上游
+    # 因 RDB 版本不兼容踩过崩溃坑），加 allkeys-lru 上限防 OOM。
+    image: docker.1ms.run/valkey/valkey:8-alpine
+    command: valkey-server --save '' --maxmemory 512mb --maxmemory-policy allkeys-lru
+    mem_limit: 512m
+    healthcheck:
+      test:
+        - CMD
+        - valkey-cli
+        - ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  backend:
+    # upstream: ghcr.io/vstorm-co/agenticos-backend:1.80.0（Apache-2.0）
+    # 镜像模式发布时 Action 改写为 ghcr.1ms.run/... 并校验 digest 与上游一致。
+    image: ghcr.1ms.run/vstorm-co/agenticos-backend:1.80.0
+    # 上游 compose 用一次性 migrate 容器跑 `agenticos db upgrade` 后退出；
+    # LPK 平台对所有服务做常驻管理，改为在 API 启动前串行执行迁移（幂等，
+    # 已到 head 时为空操作），随后 exec 接管为服务进程。
+    # CLI 的 server run 默认即用 websockets-sansio（reload_supervisor.WS_PROTOCOL），
+    # 与上游 compose 的 uvicorn --ws websockets-sansio 等效。
+    command: sh -c "agenticos db upgrade && exec python -m cli.commands server run --host 0.0.0.0 --port 8000"
+    depends_on:
+      - db
+      - redis
+    environment:
+      - ENVIRONMENT=production
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=agenticos
+      - POSTGRES_PASSWORD={{ stable_secret "pg_agenticos" }}
+      - POSTGRES_DB=agenticos
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      # JWT 签名密钥；更换后所有已发令牌失效
+      - SECRET_KEY={{ stable_secret "agenticos_jwt" }}
+      # 凭据保险库主密钥（加密存储的模型 API Key 等）；必须与数据库一同备份，
+      # 换钥后旧密文不可读
+      - VAULT_MASTER_KEY={{ stable_secret "agenticos_vault" }}
+      # 对外地址：单域名方案，浏览器经 BFF 访问 API，OAuth 回调/嵌入页/工件页
+      # 由这些值拼出
+      - PUBLIC_BASE_URL=https://{{.S.AppDomain}}
+      - FRONTEND_URL=https://{{.S.AppDomain}}
+      - CORS_ORIGINS=["https://{{.S.AppDomain}}"]
+      # 网关反代保留真实来源 IP，登录限流按用户而非按代理计数
+      - RATE_LIMIT_TRUST_FORWARDED_FOR=true
+      # 聊天附件上传上限（前后端需一致）
+      - CHAT_MAX_UPLOAD_SIZE_MB=20
+      # 嵌入模型等由应用内（保险库/构建器）配置，无部署级默认
+    healthcheck:
+      # 与上游 compose 相同：标准库 urlopen（>=400 抛异常），避免引入 httpx
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=5)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    binds:
+      # 媒体文件（上传的图片/文档），app 与 worker 共享同一目录
+      - /lzcapp/var/media:/app/media
+    mem_limit: 4g
+
+  worker:
+    # 同 agenticos-backend 镜像：后台工作进程（触发器、摄取、同步、清理与定时任务），
+    # 从 Postgres 队列领任务；摄取在子进程内跑并有内存看门狗
+    image: ghcr.1ms.run/vstorm-co/agenticos-backend:1.80.0
+    command: python -m app.worker
+    depends_on:
+      - db
+      - redis
+    environment:
+      - ENVIRONMENT=production
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=agenticos
+      - POSTGRES_PASSWORD={{ stable_secret "pg_agenticos" }}
+      - POSTGRES_DB=agenticos
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SECRET_KEY={{ stable_secret "agenticos_jwt" }}
+      - VAULT_MASTER_KEY={{ stable_secret "agenticos_vault" }}
+      - RATE_LIMIT_TRUST_FORWARDED_FOR=true
+      # 摄取子进程内存上限（须低于容器 mem_limit，看门狗先于内核杀进程并说明原因）
+      - WORKER_INGEST_MEMORY_MB=1500
+    healthcheck:
+      # 心跳落库后才更新健康文件 mtime；>90s 未更新视为失联（6 次 15s 心跳）
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os, sys, time; sys.exit(time.time() - os.stat(os.environ.get('WORKER_HEALTH_FILE', '/tmp/agenticos-worker-alive')).st_mtime > 90)"
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    binds:
+      - /lzcapp/var/media:/app/media
+    mem_limit: 4g
+
+  frontend:
+    # upstream: ghcr.io/vstorm-co/agenticos-frontend:1.80.0（Next.js 控制台）
+    # BACKEND_URL 是 BFF 路由处理器服务端代理目标；PUBLIC_* 是告诉浏览器的地址，
+    # 运行时读取（改配置只需重启容器）
+    image: ghcr.1ms.run/vstorm-co/agenticos-frontend:1.80.0
+    depends_on:
+      - backend
+    environment:
+      - NODE_ENV=production
+      - BACKEND_URL=http://backend:8000
+      - PUBLIC_API_URL=https://{{.S.AppDomain}}
+      - PUBLIC_WS_URL=wss://{{.S.AppDomain}}
+      - PUBLIC_SITE_URL=https://{{.S.AppDomain}}
+      - CHAT_MAX_UPLOAD_SIZE_MB=20
+      # 实例无内置 Google OAuth 凭据：清空登录按钮列表，用邮箱密码注册/登录
+      - OAUTH_PROVIDERS=
+      - DIAGNOSTICS_ENABLED=false
+    healthcheck:
+      # oven/bun 镜像无 curl/wget，用 bun 内置 fetch
+      test:
+        - CMD
+        - bun
+        - -e
+        - "fetch('http://localhost:3000/api/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    mem_limit: 1g
+
+usage: |
+  AgenticOS 是开源、可自托管的 AI 智能体平台：为团队提供共享聊天、RAG 知识库、
+  技能、可治理的浏览器、4700+ MCP 服务器、预算、审批与审计（Apache-2.0，基于 Pydantic AI）。
+
+  【首次使用】
+  1. 打开应用，在登录页注册——按提示创建组织和管理员账号（邮箱 + 密码）。
+  2. 进入「Settings → AI providers」添加你的模型 API Key（OpenAI / Anthropic /
+     Google 等，任选其一即可，密钥加密存入内置保险库）。
+  3. 在 Chat 里与内置的 AgenticOS 智能体对话，或用 Architect 一步步构建你自己的智能体。
+  4. 知识库（/kb）支持上传文档做 RAG 检索；MCP 服务器可在设置里连接。
+
+  【功能边界】
+  - 智能体在对话中可以联网检索、读写工作区文件（经过治理的沙箱之外的文件面板）。
+  - 需要真实浏览器或可执行容器沙箱的高级能力（上游 sandbox / browser profile）
+    在本打包中未启用——它们需要 Docker 套接字与额外系统权限，超出应用沙箱边界。
+  - Google OAuth 等第三方登录未配置，请使用邮箱注册；SMTP 未配置时邮件类
+    功能不可用，注册邀请请直接使用站内方式。
+
+  【说明】
+  - 首个注册的账号按引导创建组织并成为管理员。
+  - 数据（Postgres、媒体文件）持久化在应用数据目录；模型 API Key 由保险库密钥
+    加密，该密钥随应用稳定保存，卸载重装后旧密文不可解。
+  - 上游为 Apache-2.0 开源：https://github.com/vstorm-co/agenticos

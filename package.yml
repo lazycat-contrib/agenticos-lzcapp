@@ -1,0 +1,21 @@
+package: community.lazycat.app.agenticos
+version: 1.80.0
+name: AgenticOS
+description: "Open-source, self-hosted AI agent platform for your company's AI teammates: shared chat, RAG knowledge bases, skills, a governed browser, 4700+ MCP servers, budgets, approvals and an audit trail. Built on Pydantic AI (Apache-2.0)."
+min_os_version: 1.5.0
+homepage: https://github.com/vstorm-co/agenticos
+author: vstorm-co
+license: Apache-2.0
+permissions:
+  required:
+    - net.internet
+locales:
+  zh:
+    name: "AgenticOS"
+    description: "开源、可自托管的企业级 AI 智能体平台：团队共享聊天、RAG 知识库、技能、可治理的浏览器、4700+ MCP 服务器、预算、审批与审计。基于 Pydantic AI 构建（Apache-2.0）。"
+  zh_CN:
+    name: "AgenticOS"
+    description: "开源、可自托管的企业级 AI 智能体平台：团队共享聊天、RAG 知识库、技能、可治理的浏览器、4700+ MCP 服务器、预算、审批与审计。基于 Pydantic AI 构建（Apache-2.0）。"
+  en:
+    name: "AgenticOS"
+    description: "Open-source, self-hosted AI agent platform for your company's AI teammates: shared chat, RAG knowledge bases, skills, a governed browser, 4700+ MCP servers, budgets, approvals and an audit trail. Built on Pydantic AI (Apache-2.0)."

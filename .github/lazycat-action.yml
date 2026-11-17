@@ -1,0 +1,91 @@
+version: 1
+
+project:
+  root: .
+  build_config: lzc-build.yml
+  package_file: package.yml
+  output: .lazycat-build/agenticos.lpk
+  target_arch: amd64
+
+update:
+  strategy: publish
+  allow_downgrade: false
+  version_source:
+    type: image
+    image: backend
+
+build:
+  toolchains: []
+  run_buildscript: false
+
+images:
+  # 主服务：AgenticOS 后端（FastAPI + Pydantic AI）。上游 git 发 v1.x.y tag，
+  # 镜像发同号去 v 的 1.x.y tag（plain SemVer 才附 latest）。
+  # 注意：上游还有历史 0.0.x 时代的镜像 tag，但 SemVer 排序下 1.80.0 > 0.0.429，
+  # 稳定通道自然选中当前 1.x 系列。
+  - id: backend
+    target: service
+    service: backend
+    source: ghcr.io/vstorm-co/agenticos-backend
+    channel: stable
+    sort: semver
+    tag_regex: '^[0-9]+\.[0-9]+\.[0-9]+$'
+    delivery:
+      # 喵喵商店镜像模式：经 ghcr.1ms.run 加速直连上游，要求 digest 与上游一致
+      mode: mirror
+      require_digest_match: true
+
+  # worker 与 app 共用后端镜像，必须同版本 lockstep 升级——
+  # 同一 source + 同一 tag_regex，各自改写自己服务的 image 行
+  - id: backend-worker
+    target: service
+    service: worker
+    source: ghcr.io/vstorm-co/agenticos-backend
+    channel: stable
+    sort: semver
+    tag_regex: '^[0-9]+\.[0-9]+\.[0-9]+$'
+    delivery:
+      mode: mirror
+      require_digest_match: true
+
+  # 控制台前端镜像，与后端同 tag 发布
+  - id: frontend
+    target: service
+    service: frontend
+    source: ghcr.io/vstorm-co/agenticos-frontend
+    channel: stable
+    sort: semver
+    tag_regex: '^[0-9]+\.[0-9]+\.[0-9]+$'
+    delivery:
+      mode: mirror
+      require_digest_match: true
+
+  # 基础设施跟随镜像：不驱动版本号，固定当前 tag 族
+  - id: pgvector
+    target: service
+    service: db
+    source: docker.io/pgvector/pgvector
+    channel: stable
+    tag_regex: '^pg16$'
+    delivery:
+      mode: mirror
+      require_digest_match: true
+
+  - id: valkey
+    target: service
+    service: redis
+    source: docker.io/valkey/valkey
+    channel: stable
+    tag_regex: '^8-alpine$'
+    delivery:
+      mode: mirror
+      require_digest_match: true
+
+stores:
+  private:
+    enabled: true
+    skip_if_version_exists: true
+    name: AgenticOS
+    summary: "AgenticOS 懒猫微服打包：开源可自托管的 AI 智能体平台（Pydantic AI），共享聊天 + RAG 知识库 + 技能 + MCP + 审批审计（Apache-2.0）。"
+  official:
+    enabled: false
