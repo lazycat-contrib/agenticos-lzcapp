@@ -57,9 +57,9 @@ services:
       retries: 5
       start_period: 10s
   backend:
-    # upstream: ghcr.io/vstorm-co/agenticos-backend:1.83.0
+    # upstream: ghcr.io/vstorm-co/agenticos-backend:1.84.0
     # 镜像模式发布时 Action 改写为 ghcr.1ms.run/... 并校验 digest 与上游一致。
-    image: ghcr.1ms.run/vstorm-co/agenticos-backend:1.83.0
+    image: ghcr.1ms.run/vstorm-co/agenticos-backend:1.84.0
     # 上游 compose 用一次性 migrate 容器跑 `agenticos db upgrade` 后退出；
     # LPK 平台对所有服务做常驻管理，改为在 API 启动前串行执行迁移（幂等，
     # 已到 head 时为空操作），随后 exec 接管为服务进程。
