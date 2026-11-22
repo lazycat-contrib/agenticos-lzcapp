@@ -1,5 +1,5 @@
 package: community.lazycat.app.agenticos
-version: 1.88.0
+version: 1.89.0
 name: AgenticOS
 description: "Open-source, self-hosted AI agent platform for your company's AI teammates: shared chat, RAG knowledge bases, skills, a governed browser, 4700+ MCP servers, budgets, approvals and an audit trail. Built on Pydantic AI (Apache-2.0)."
 min_os_version: 1.5.0
